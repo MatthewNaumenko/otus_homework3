@@ -8,14 +8,13 @@
 
 // статический пул-аллокатор
 // для каждого T и N аллокатор держит статический пул из N ячеек типа T
-
 template <class T, std::size_t N>
 class StaticPoolAllocator {
 public:
-    using value_type = T;
-    using pointer = T*;
-    using const_pointer = const T*;
-    using size_type = std::size_t;
+    using value_type      = T;
+    using pointer         = T*;
+    using const_pointer   = const T*;
+    using size_type       = std::size_t;
     using difference_type = std::ptrdiff_t;
 
     using propagate_on_container_move_assignment = std::true_type;
@@ -30,6 +29,9 @@ public:
     StaticPoolAllocator(const StaticPoolAllocator<U, N>&) noexcept {}
 
     pointer allocate(size_type n) {
+        // allocate(0)
+        if (n == 0) return nullptr;
+
         if (n != 1) {
             throw std::bad_alloc();
         }
@@ -63,7 +65,7 @@ public:
 private:
     // сырые ячейки памяти под T
     using storage_t = std::aligned_storage_t<sizeof(T), alignof(T)>;
-    static inline storage_t pool_[N]{};
+    static inline storage_t  pool_[N]{};
     static inline std::size_t used_ = 0;
 
     // узлы списка свободных блоков
@@ -81,7 +83,7 @@ class SimpleForwardList {
         Node(T&& v, Node* n=nullptr) : value(std::move(v)), next(n) {}
     };
 
-    using NodeAlloc = typename std::allocator_traits<Alloc>::template rebind_alloc<Node>;
+    using NodeAlloc  = typename std::allocator_traits<Alloc>::template rebind_alloc<Node>;
     using NodeTraits = std::allocator_traits<NodeAlloc>;
 
 public:
@@ -145,11 +147,20 @@ public:
     iterator end() noexcept { return iterator(nullptr); }
 
 private:
-    NodeAlloc alloc_{};
-    Node* head_ = nullptr;
-    Node* tail_ = nullptr;
-    std::size_t sz_ = 0;
+    NodeAlloc   alloc_{};
+    Node*       head_ = nullptr;
+    Node*       tail_ = nullptr;
+    std::size_t sz_    = 0;
 };
+
+#if defined(_MSC_VER)
+constexpr std::size_t kMapOverhead = 2;
+#else
+constexpr std::size_t kMapOverhead = 1;
+#endif
+
+template<std::size_t N>
+using MapPoolAlloc = StaticPoolAllocator<std::pair<const int,int>, N + kMapOverhead>;
 
 // демонстрация
 static int factorial(int x) {
@@ -163,9 +174,8 @@ int main() {
     std::map<int,int> m1;
     for (int i = 0; i < 10; ++i) m1.emplace(i, factorial(i));
 
-    // std::map<int,int> с нашим аллокатором, лимит 10 узлов
-    using MapAlloc = StaticPoolAllocator<std::pair<const int,int>, 10>;
-    std::map<int,int, std::less<>, MapAlloc> m2;
+    // std::map<int,int> с нашим аллокатором лимит 10 элементов
+    std::map<int,int, std::less<>, MapPoolAlloc<10>> m2;
     for (int i = 0; i < 10; ++i) m2.emplace(i, factorial(i));
 
     // вывод обоих контейнеров
