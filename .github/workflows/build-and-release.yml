@@ -1,0 +1,64 @@
+name: cmake-build-and-release
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*.*.*' ]
+  pull_request:
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, windows-latest, macos-latest ]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure (CMake)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_LTO=ON
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Smoke run
+        if: runner.os != 'Windows'
+        run: ./build/alloc_demo
+
+      - name: Smoke run (Windows)
+        if: runner.os == 'Windows'
+        run: build/Release/alloc_demo.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: alloc_demo-${{ runner.os }}
+          path: |
+            build/alloc_demo
+            build/Release/alloc_demo.exe
+          if-no-files-found: ignore
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: alloc_demo-*
+          merge-multiple: true
+          path: dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**
+          generate_release_notes: true
