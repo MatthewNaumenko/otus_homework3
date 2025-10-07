@@ -5,9 +5,9 @@
 #include <utility>
 #include <stdexcept>
 #include <iterator>
+#include <new>         
 
-// статический пул-аллокатор
-// для каждого T и N аллокатор держит статический пул из N ячеек типа T
+// пул-аллокатор на куче
 template <class T, std::size_t N>
 class StaticPoolAllocator {
 public:
@@ -24,37 +24,38 @@ public:
 
     template <class U> struct rebind { using other = StaticPoolAllocator<U, N>; };
 
-    StaticPoolAllocator() noexcept {}
+    StaticPoolAllocator() noexcept = default;
     template <class U>
     StaticPoolAllocator(const StaticPoolAllocator<U, N>&) noexcept {}
 
     pointer allocate(size_type n) {
-        // allocate(0)
+        // некоторые реализации STL зовут allocate(0)
         if (n == 0) return nullptr;
+        if (n != 1) throw std::bad_alloc();
 
-        if (n != 1) {
-            throw std::bad_alloc();
-        }
+        ensure_pool_();
 
-        // сначала из списка свободных
-        if (free_list_) {
-            void* p = free_list_;
-            free_list_ = free_list_->next;
+        // из free-list
+        if (state_.free_list) {
+            void* p = state_.free_list;
+            state_.free_list = state_.free_list->next;
             return static_cast<pointer>(p);
         }
 
-        // из неиспользованной части пула
-        if (used_ < N) {
-            void* p = &pool_[used_++];
+        //  из неиспользованной части пула
+        if (state_.used < N) {
+            void* p = &state_.pool[state_.used++];
             return static_cast<pointer>(p);
         }
+
         throw std::bad_alloc();
     }
 
     void deallocate(pointer p, size_type) noexcept {
+        // возвращаем ячейку в free-list
         auto node = reinterpret_cast<FreeNode*>(p);
-        node->next = free_list_;
-        free_list_ = node;
+        node->next = state_.free_list;
+        state_.free_list = node;
     }
 
     template <class U>
@@ -63,17 +64,38 @@ public:
     bool operator!=(const StaticPoolAllocator<U, N>& other) const noexcept { return !(*this == other); }
 
 private:
-    // сырые ячейки памяти под T
     using storage_t = std::aligned_storage_t<sizeof(T), alignof(T)>;
-    static inline storage_t  pool_[N]{};
-    static inline std::size_t used_ = 0;
 
-    // узлы списка свободных блоков
     struct FreeNode { FreeNode* next; };
-    static inline FreeNode* free_list_ = nullptr;
+
+    struct State {
+        storage_t*  pool      = nullptr; // массив N ячеек на куче
+        std::size_t used      = 0;       // сколько выдано 
+        FreeNode*   free_list = nullptr; // возвраты поэлементных освобождений
+
+        ~State() {
+            if (pool) {
+                ::operator delete[](pool, std::align_val_t(alignof(storage_t)));
+                pool = nullptr;
+            }
+        }
+    };
+
+    static inline State state_{};
+
+    static void ensure_pool_() {
+        if (!state_.pool) {
+            state_.pool = static_cast<storage_t*>(
+                ::operator new[](sizeof(storage_t) * N,
+                                 std::align_val_t(alignof(storage_t)))
+            );
+            state_.used = 0;
+            state_.free_list = nullptr;
+        }
+    }
 };
 
-// простой контейнер односвязный список
+// простой однонаправленный список параметризуемый аллокатором
 template <class T, class Alloc = std::allocator<T>>
 class SimpleForwardList {
     struct Node {
@@ -124,7 +146,6 @@ public:
     bool empty() const noexcept { return sz_ == 0; }
     std::size_t size() const noexcept { return sz_; }
 
-    // итератор вперёд
     struct iterator {
         using iterator_category = std::forward_iterator_tag;
         using value_type = T;
@@ -170,28 +191,27 @@ static int factorial(int x) {
 }
 
 int main() {
-    // обычная std::map<int,int> со стандартным аллокатором
+    // std::map со стандартным аллокатором
     std::map<int,int> m1;
     for (int i = 0; i < 10; ++i) m1.emplace(i, factorial(i));
 
-    // std::map<int,int> с нашим аллокатором лимит 10 элементов
+    // std::map с пул-аллокатором на куче, лимит 10 элементов
     std::map<int,int, std::less<>, MapPoolAlloc<10>> m2;
     for (int i = 0; i < 10; ++i) m2.emplace(i, factorial(i));
 
-    // вывод обоих контейнеров
+    // печать
     std::cout << "std::map (std::allocator):\n";
     for (const auto& [k,v] : m1) std::cout << k << ' ' << v << '\n';
 
     std::cout << "std::map (StaticPoolAllocator, N=10):\n";
     for (const auto& [k,v] : m2) std::cout << k << ' ' << v << '\n';
 
-    // наш контейнер без кастомного аллокатора
+    // мой контейнер без и с аллокатором
     SimpleForwardList<int> c1;
     for (int i = 0; i < 10; ++i) c1.push_back(i);
     std::cout << "SimpleForwardList<int> (std::allocator):\n";
     for (int x : c1) std::cout << x << '\n';
 
-    // наш контейнер c кастомным аллокатором, лимит 10 элементов
     using ListAlloc = StaticPoolAllocator<int, 10>;
     SimpleForwardList<int, ListAlloc> c2;
     for (int i = 0; i < 10; ++i) c2.push_back(i);
